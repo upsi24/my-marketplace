@@ -1,71 +1,77 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-
-// Import the tables we created
-const { User, Item, Transaction } = require('./models');
+const multer = require('multer'); // New: For handling files
+const cloudinary = require('cloudinary').v2; // New: For cloud storage
+require('dotenv').config();
 
 const app = express();
+app.use(cors());
+app.use(express.json());
 
-// --- MIDDLEWARE ---
-app.use(express.json()); 
-app.use(cors()); 
-
-// --- DATABASE CONNECTION ---
-// 👇👇 IMPORTANT: Replace 'REPLACE_WITH_REAL_PASSWORD' with your actual password below 👇👇
-const MONGO_URI = 'mongodb+srv://tuanammar050_db_user:Cd7fdd2903**@cluster0.advlupt.mongodb.net/?appName=Cluster0';
-
-mongoose.connect(MONGO_URI)
-  .then(() => console.log('✅ MongoDB Connected!'))
-  .catch(err => console.log('❌ DB Connection Error:', err));
-
-
-// --- ROUTES ---
-
-// 1. TEST ROUTE
-app.get('/', (req, res) => {
-  res.send('Server is Running! Marketplace API is active.');
+// 1. Configure Cloudinary (Replace with YOUR actual keys)
+cloudinary.config({
+  cloud_name: 'YOUR_CLOUD_NAME_HERE', 
+  api_key: 'YOUR_API_KEY_HERE', 
+  api_secret: 'YOUR_API_SECRET_HERE' 
 });
 
-// 2. REGISTER USER
-app.post('/api/register', async (req, res) => {
-  try {
-    const { username, password, email } = req.body;
-    const hashedPassword = await bcrypt.hash(password, 10);
+// 2. Configure Multer (Use Memory Storage for Vercel)
+const storage = multer.memoryStorage();
+const upload = multer({ storage: storage });
 
-    const newUser = await User.create({
-      username,
-      email,
-      password: hashedPassword,
+// Database Connection
+mongoose.connect('YOUR_MONGODB_CONNECTION_STRING_HERE')
+  .then(() => console.log("MongoDB Connected"))
+  .catch(err => console.log(err));
+
+// Product Schema
+const ProductSchema = new mongoose.Schema({
+  title: String,
+  price: Number,
+  description: String,
+  imageUrl: String, // New: We store the LINK, not the file
+});
+const Product = mongoose.model('Product', ProductSchema);
+
+// 3. The Upload Route (Magic happens here)
+app.post('/api/products', upload.single('image'), async (req, res) => {
+  try {
+    // If no file is uploaded, skip
+    let imageUrl = "";
+    
+    if (req.file) {
+      // Convert buffer to Base64 and upload to Cloudinary
+      const b64 = Buffer.from(req.file.buffer).toString("base64");
+      let dataURI = "data:" + req.file.mimetype + ";base64," + b64;
+      
+      const cldRes = await cloudinary.uploader.upload(dataURI, {
+        resource_type: "auto",
+      });
+      imageUrl = cldRes.secure_url; // This is the link we want!
+    }
+
+    // Save to Database
+    const newProduct = new Product({
+      title: req.body.title,
+      price: req.body.price,
+      description: req.body.description,
+      imageUrl: imageUrl // Save the link
     });
 
-    res.json({ message: "User registered successfully!", user: newUser });
+    await newProduct.save();
+    res.status(201).json(newProduct);
   } catch (error) {
-    res.status(500).json({ error: "Error registering user", details: error.message });
+    console.error(error);
+    res.status(500).json({ error: 'Upload failed' });
   }
 });
 
-// 3. LOGIN USER
-app.post('/api/login', async (req, res) => {
-  try {
-    const { email, password } = req.body;
-    const user = await User.findOne({ email });
-
-    if (!user) return res.status(400).json({ error: "User not found" });
-
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) return res.status(400).json({ error: "Invalid credentials" });
-
-    const token = jwt.sign({ id: user._id }, 'SECRET_KEY_123'); 
-    
-    res.json({ token, user: { id: user._id, username: user.username, balance: user.balance } });
-  } catch (error) {
-    res.status(500).json({ error: "Login failed" });
-  }
+// 4. Get Route
+app.get('/api/products', async (req, res) => {
+  const products = await Product.find();
+  res.json(products);
 });
 
-// --- START SERVER ---
-const PORT = 5000;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+// Export for Vercel
+module.exports = app;
